@@ -4,117 +4,73 @@
 package clp.java;
 
 
-import org.apache.commons.lang3.ArrayUtils;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
-import java.util.ArrayList;
-import java.util.regex.Matcher;
+import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
-import com.yscope.clp.compressorfrontend.BuiltInVariableHandlingRuleVersions;
-import com.yscope.clp.compressorfrontend.EncodedMessage;
-import com.yscope.clp.compressorfrontend.MessageEncoder;
-import com.yscope.clp.compressorfrontend.AbstractClpEncodedSubquery.VariableWildcardQuery;
-import com.yscope.clp.compressorfrontend.BuiltInVariableHandlingRuleVersions;
-import com.yscope.clp.compressorfrontend.ByteSegment;
-import com.yscope.clp.compressorfrontend.ByteSegments;
-import com.yscope.clp.compressorfrontend.EightByteClpEncodedSubquery;
-import com.yscope.clp.compressorfrontend.EightByteClpWildcardQueryEncoder;
+
 
 
 public class App {
-    public class Result {
-        String logtype;
-        long[] encodedVars;
-        String[] dictVars;
 
-        @Override
-        public String toString() {
-            return "Result [logtype=" + logtype + ", encodedVars=" + Arrays.toString(encodedVars) + ", dictVars=" + Arrays.toString(dictVars) + "]";
-        }
-
-        public Result(String logtype, long[] encodedVars, String[] dictVars) {
-            this.logtype = logtype;
-            this.encodedVars = encodedVars;
-            this.dictVars = dictVars;
-        }
-
-        public Result(String logtype, long[] encodedVars, ByteSegments dictVars) {
-            this.logtype = logtype;
-            this.encodedVars = encodedVars;
-            ArrayList<String> dictVarsStrings = new ArrayList<>();
-            for (ByteSegment byteSegment : dictVars) {
-                dictVarsStrings.add(byteSegment.toString());
-            }
-            this.dictVars =dictVarsStrings.toArray());
-        }
-    }
-
-    private Result encode(String valueToEncode) {
-        MessageEncoder _clpMessageEncoder = new MessageEncoder(BuiltInVariableHandlingRuleVersions.VariablesSchemaV2, BuiltInVariableHandlingRuleVersions.VariableEncodingMethodsV1);
-        EncodedMessage _clpEncodedMessage = new EncodedMessage();
-
-        try {
-            System.out.printf("Encoding message=%s, schema=%s, varHandling=%s\n", valueToEncode, BuiltInVariableHandlingRuleVersions.VariablesSchemaV2, BuiltInVariableHandlingRuleVersions.VariableEncodingMethodsV1);
-            _clpMessageEncoder.encodeMessage(valueToEncode, _clpEncodedMessage);
-
-            String logtype = _clpEncodedMessage.getLogTypeAsString();
-            long[] encodedVars = ArrayUtils.toPrimitive(_clpEncodedMessage.getEncodedVarsAsBoxedLongs());
-            String[] dictVars = _clpEncodedMessage.getDictionaryVarsAsStrings();
-
-            System.out.printf("encode | valueToEncode=%s,encoded=%s\n", valueToEncode, _clpEncodedMessage);
-
-            return new Result(logtype, encodedVars, dictVars);
-        } catch (Exception e) {
-            e.printStackTrace(System.out);
-        }
-        
-    }
-
-    private List<Result> encodeWildcardQuery(String wildcardQuery) {
-        EightByteClpWildcardQueryEncoder queryEncoder = new EightByteClpWildcardQueryEncoder(BuiltInVariableHandlingRuleVersions.VariablesSchemaV2, BuiltInVariableHandlingRuleVersions.VariableEncodingMethodsV1);
-        EightByteClpEncodedSubquery[] subqueries = queryEncoder.encode(wildcardQuery);
-        List<Result> results = new ArrayList<>();
-        for (EightByteClpEncodedSubquery subquery : subqueries) {
-            String logtype = subquery.getLogtypeQueryAsString();
-            long[] encodedVars = subquery.getEncodedVars();
-            ByteSegments dictVars = subquery.getDictVars();
-            System.out.printf("encodeWildcardQuery | wildcardQuery=%s,encoded=%s\n", wildcardQuery, subquery);
-            results.add(new Result(logtype, encodedVars, dictVars));
-        }
-        return results;
-    }
-
+    private static final Logger logger = Logger.getLogger(App.class.getName());
 
     public static void main(String[] args) {
         App app = new App();
-        String[] testMessages = {"Started job_123 on node-987: 4 cores, 8 threads and 51.4% memory used.", "Can't fetch flow 6, cell_32"};
-        String[] testQueries = {"Started job_*", "Can't fetch flow*"};
+        CLPEncoder clpEncoder = new CLPEncoder();
+
+        String[] testMessages = {"Started job_123 on node-987: 4 cores, 8 threads and 51.4% memory used.", "Can't fetch flow 6, cell_32", "Started job_123 on node-987: 4 cores"};
+        // todo: why does Started job.* query get encoded to Started * instead of Started .*
+        String[] testQueries = {"Started job.*", "Can't fetch flow.*", "node.*"};
 
         // encode each test message
         // and simulate search by encoding query to get possible subqueries
         // then match each subquery with stored message by checking the logtype, dictvars
-        for (int i = 0; i <= testMessages.length; i++) {
+        for (int i = 0; i < testMessages.length; i++) {
             String testMessage = testMessages[i];
             String testQuery = testQueries[i];
-            Result encodedStoredMessage = app.encode(testMessage);
-            List<Result> encodedSubqueries = app.encodeWildcardQuery(testQuery);
+            
+            // encode message to be stored
+            CLPEncodedMessage encodedStoredMessage = clpEncoder.encode(testMessage).get();
+            // encode query to get possible subqueries
+            List<CLPEncodedMessage> encodedSubqueries = clpEncoder.encodeWildcardQuery(testQuery);
 
+            // check if query matches stored message
             boolean hasAtLeastOneMatchingSubquery = false;
-            for (Result encodedSubquery : encodedSubqueries) {
-                System.out.printf("encodeWildcardQuery | wildcardQuery=%s,encoded=%s\n", testQuery, encodedSubquery);
-
-                Pattern subqueryRegexp = Pattern.compile(encodedSubquery.logtype);
-                Matcher subqueryRegexpMatch = subqueryRegexp.matcher(encodedStoredMessage.logtype);
-                if (subqueryRegexpMatch.matches()) {
+            for (CLPEncodedMessage encodedSubquery : encodedSubqueries) {
+                // check if subquery's logtype matches stored message's logtype
+                Pattern subqueryLogtypeRegexp = Pattern.compile(encodedSubquery.logtype);
+                boolean hasMatchingLogType = subqueryLogtypeRegexp.matcher(encodedStoredMessage.logtype).matches();
+                if (hasMatchingLogType) {
                     hasAtLeastOneMatchingSubquery = true;
                     break;
                 }
 
-                // TODO: check if dict vars match
+                // check if subquery's logtype matches stired message's dictvars
+                boolean doesSubqueryLogTypeMatchDictVar = Arrays.stream(encodedStoredMessage.dictVars).filter(storedDictVar -> subqueryLogtypeRegexp.matcher(storedDictVar).matches()).findFirst().isPresent();
+                if (doesSubqueryLogTypeMatchDictVar) {
+                    hasAtLeastOneMatchingSubquery = true;
+                    break;
+                }
+
+                // check if subquery's dictvars match stored message's dictvars
+                // we do so by checking if there is at least one common element between the two sets using set intersection
+                Set<String> encodedStoredMessageDictVars = new HashSet<>(Arrays.asList(encodedStoredMessage.dictVars));
+                Set<String> encodedSubqueryDictVars = new HashSet<>(Arrays.asList(encodedSubquery.dictVars));
+                boolean hasAtLeastOneMatchingDictVar = encodedStoredMessageDictVars.stream().filter(encodedSubqueryDictVars::contains).findFirst().isPresent();
+                if (hasAtLeastOneMatchingDictVar) {
+                    hasAtLeastOneMatchingSubquery = true;
+                    break;
+                }
             }
 
+            logger.log(Level.INFO, "main | encodedStoredMessage={0}, encodedSubqueries={1}, hasAtLeastOneMatchingSubquery={2}", new Object[]{encodedStoredMessage, encodedSubqueries, hasAtLeastOneMatchingSubquery});
+
+            // assert that query matches the stored message
             assert hasAtLeastOneMatchingSubquery == true;
         }
-        
     }
 }
